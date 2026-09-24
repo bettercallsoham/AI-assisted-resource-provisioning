@@ -1,0 +1,39 @@
+services:
+  workload:
+    build: ./workload-generator
+    ports: ["8000:8000"]
+  ml-service:
+    build: ./ml-service
+    ports: ["8001:8001"]
+    environment:
+      METRICS_DATA: /app/data/sample_metrics.csv
+  decision-engine:
+    build: ./decision-engine
+    ports: ["8002:8002"]
+  backend:
+    build: ./backend
+    ports: ["3000:3000"]
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      ML_SERVICE_URL: http://ml-service:8001
+      DECISION_ENGINE_URL: http://decision-engine:8002
+    depends_on: [prometheus, ml-service, decision-engine]
+  dashboard:
+    build: ./dashboard
+    ports: ["5173:80"]
+    depends_on: [backend]
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    ports: ["9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on: [workload]
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    ports: ["8080:8080"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro

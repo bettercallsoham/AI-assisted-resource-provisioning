@@ -1,0 +1,9 @@
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+*.pyc
+ml-service/models/*
+!ml-service/models/.gitkeep
+.env
+*.tsbuildinfo
