@@ -7,7 +7,9 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sklearn.ensemble import RandomForestRegressor
 
-from preprocessing import FEATURES, load_metrics, make_sequences
+from preprocessing import FEATURES, load_metrics
+from prediction.lstm_predictor import LSTMPredictor
+from training.train_lstm import train as train_lstm_model
 
 ROOT = Path(__file__).parent
 MODEL_DIR = ROOT / "models"
@@ -16,7 +18,7 @@ app = FastAPI(title="AI Provisioning ML Service")
 
 
 class WorkloadRequest(BaseModel):
-    history: list[float] = Field(min_length=2)
+    history: list[float] = Field(min_length=12)
 
 
 class ResourceRequest(BaseModel):
@@ -48,23 +50,14 @@ def health() -> dict:
 @app.post("/predict/workload")
 def predict_workload(request: WorkloadRequest) -> dict:
     model_path = MODEL_DIR / "lstm_model.keras"
-    if model_path.exists():
-        try:
-            from tensorflow import keras
-            scaler = np.load(MODEL_DIR / "lstm_scaler.npy")
-            model = keras.models.load_model(model_path)
-            values = np.array(request.history, dtype=float)
-            scaled = (values - scaler[0]) / (scaler[1] - scaler[0] or 1)
-            window = int(model.input_shape[1])
-            prediction = model.predict(scaled[-window:].reshape(1, window, 1), verbose=0)[0][0]
-            prediction = prediction * (scaler[1] - scaler[0]) + scaler[0]
-        except Exception as error:
-            raise HTTPException(500, f"Unable to load LSTM model: {error}") from error
-    else:
-        if len(request.history) < 3:
-            raise HTTPException(503, "LSTM model is not trained. Run POST /train/lstm.")
-        prediction = request.history[-1] + (request.history[-1] - request.history[-2])
-    return {"predicted_request_rate": round(max(0, float(prediction)), 3), "model": "lstm" if model_path.exists() else "trend-baseline"}
+    scaler_path = MODEL_DIR / "lstm_scaler.joblib"
+    if not model_path.exists() or not scaler_path.exists():
+        raise HTTPException(503, "LSTM model is not trained. Run the LSTM training script.")
+    try:
+        prediction = LSTMPredictor(model_path, scaler_path).predict(request.history)
+    except Exception as error:
+        raise HTTPException(500, f"Unable to predict with LSTM model: {error}") from error
+    return {"predicted_request_rate": round(max(0, prediction), 3), "model": "lstm"}
 
 
 @app.post("/predict/resources")
@@ -103,21 +96,17 @@ def train_random_forest(path: str = os.getenv("METRICS_DATA", str(ROOT / "data" 
 
 
 @app.post("/train/lstm")
-def train_lstm(path: str = os.getenv("METRICS_DATA", str(ROOT / "data" / "sample_metrics.csv")), epochs: int = 20) -> dict:
+def train_lstm(path: str = os.getenv("METRICS_DATA", str(ROOT / "data" / "final_dataset.csv")), epochs: int = 30) -> dict:
     try:
-        from tensorflow import keras
-    except ImportError as error:
-        raise HTTPException(503, "TensorFlow is required for LSTM training") from error
-    frame = load_metrics(path)
-    series = frame["request_rate"].to_numpy(dtype=float)
-    window = min(5, len(series) - 1)
-    sequences, targets = make_sequences(series, window)
-    low, high = float(series.min()), float(series.max())
-    scaled = [(np.array(sequence) - low) / (high - low or 1) for sequence in sequences]
-    y = (np.array(targets) - low) / (high - low or 1)
-    model = keras.Sequential([keras.layers.Input((window, 1)), keras.layers.LSTM(16), keras.layers.Dense(1)])
-    model.compile(optimizer="adam", loss="mse")
-    model.fit(np.array(scaled)[..., None], y, epochs=epochs, verbose=0)
-    model.save(MODEL_DIR / "lstm_model.keras")
-    np.save(MODEL_DIR / "lstm_scaler.npy", np.array([low, high]))
-    return {"status": "trained", "rows": len(sequences), "epochs": epochs}
+        metrics = train_lstm_model(
+            Path(path),
+            MODEL_DIR / "lstm_model.keras",
+            MODEL_DIR / "lstm_scaler.joblib",
+            MODEL_DIR / "lstm_metrics.json",
+            window=12,
+            epochs=epochs,
+            batch_size=32,
+        )
+    except Exception as error:
+        raise HTTPException(500, f"Unable to train LSTM: {error}") from error
+    return {"status": "trained", **metrics}

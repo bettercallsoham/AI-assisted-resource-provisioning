@@ -78,6 +78,40 @@ Invoke-RestMethod -Method Post -Uri 'http://localhost:8001/train/lstm?epochs=20'
 
 Run the generator from the host with `http://localhost:8000/work`. Stop with `docker compose down`.
 
+-----------------------------------------------------------------------------------------------------
+metrics collection phase:
+## Real data collection
+
+The Compose stack collects workload application counters and latency from `/metrics`. cAdvisor supplies the workload container's real CPU, memory, and network measurements. The collector does not substitute values: it waits for a required Prometheus series and writes a row only when all five measurements are available.
+
+Start Docker Desktop, then from the repository root start the stack:
+
+```powershell
+docker compose up --build
+```
+
+In a second terminal, start the collector. It samples Prometheus every five seconds and writes only live measurements to `data/raw/metrics.csv`:
+
+```powershell
+python data\collection\collect_metrics.py --duration 1800 --interval 5
+```
+
+In a third terminal, start the changing workload scenario against the Docker workload service:
+
+```powershell
+python data\collection\workload_scenario.py --url http://localhost:8000/work --phase-duration 30
+```
+
+The scenario runs `low -> medium -> high -> spike -> decrease -> mixed`. The resulting CSV is stored at `data/raw/metrics.csv` and has exactly these columns: `timestamp`, `request_rate`, `cpu_utilization`, `memory_utilization`, `network_throughput`, and `response_latency`. CPU and memory are percentages, network throughput is bytes per second, request rate is requests per second, and response latency is milliseconds.
+
+Useful checks while Docker is running:
+
+```powershell
+Invoke-RestMethod http://localhost:8000/metrics
+Invoke-RestMethod http://localhost:9090/-/ready
+Get-Content data\raw\metrics.csv
+```
+-----------------------------------------------------------------------------------------------------
 ## Tests and verification
 
 ```powershell
