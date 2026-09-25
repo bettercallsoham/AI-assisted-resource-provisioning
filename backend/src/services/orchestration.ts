@@ -9,7 +9,7 @@ const hosts: Host[] = [
   { id: "Host-03", total_cpu: 16, total_memory: 32, total_network: 10000, allocated_cpu: 3, allocated_memory: 8, allocated_network: 400 }
 ];
 const events: Array<Record<string, unknown>> = [];
-const history: number[] = [];
+const history: Array<{ timestamp: string; actual: number; predicted: number }> = [];
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -27,11 +27,11 @@ async function query(promql: string): Promise<number | null> {
 
 async function metrics(): Promise<Metrics> {
   const [requestRate, cpu, memory, network, latency] = await Promise.all([
-    query("rate(workload_requests_total{status=\"success\"}[1m])"),
-    query("100 * avg(rate(container_cpu_usage_seconds_total{name=\"workload\"}[1m]))"),
-    query("container_memory_usage_bytes{name=\"workload\"}"),
-    query("rate(container_network_receive_bytes_total{name=\"workload\"}[1m])"),
-    query("rate(workload_request_latency_seconds_sum[1m]) / rate(workload_request_latency_seconds_count[1m])")
+    query("sum(rate(workload_requests_total{endpoint=\"work\",status=\"success\"}[30s]))"),
+    query("workload_cpu_utilization_percent"),
+    query("workload_memory_utilization_percent"),
+    query("workload_network_throughput_bytes_per_second"),
+    query("1000 * sum(rate(workload_request_latency_seconds_sum{endpoint=\"work\"}[30s])) / sum(rate(workload_request_latency_seconds_count{endpoint=\"work\"}[30s]))")
   ]);
   return { requestRate, cpu, memory, network, latency, timestamp: new Date().toISOString() };
 }
@@ -42,22 +42,23 @@ function addEvent(eventType: string, message: string, details: Record<string, un
 }
 
 export async function getSnapshot(): Promise<Snapshot> {
-  const observed = await metrics();
-  const currentRate = observed.requestRate ?? 0;
-  history.push(currentRate);
-  if (history.length > 20) history.shift();
-  const snapshot: Snapshot = { metrics: observed, prediction: null, resources: null, decision: null, placement: null, explanation: null, errors: [], events };
-  if (history.length < 3) snapshot.errors.push("Waiting for at least three observed request-rate samples");
+  const snapshot: Snapshot = { metrics: { requestRate: null, cpu: null, memory: null, network: null, latency: null, timestamp: new Date().toISOString() }, prediction: null, resources: null, decision: null, placement: null, explanation: null, hosts, history: [...history], errors: [], events };
   try {
-    const prediction = await json<{ predicted_request_rate: number; model: string }>(`${mlUrl}/predict/workload`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ history: history.length >= 3 ? history : [0, 0, 0] }) });
-    snapshot.prediction = prediction;
-    addEvent("LSTM_PREDICTION", "Workload forecast updated", prediction);
-    const request = { predicted_request_rate: prediction.predicted_request_rate, current_request_rate: currentRate, cpu_utilization: observed.cpu ?? 0, memory_utilization: observed.memory ?? 0, network_throughput: observed.network ?? 0, response_latency: observed.latency ?? 0 };
-    const resources = await json<{ predicted_cpu: number; predicted_memory: number; predicted_network: number }>(`${mlUrl}/predict/resources`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
-    snapshot.resources = resources;
-    snapshot.explanation = await json(`${mlUrl}/explain/resources`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) });
-    snapshot.decision = await json(`${decisionUrl}/decision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hosts, predicted: { cpu: resources.predicted_cpu, memory: resources.predicted_memory, network: resources.predicted_network } }) });
-    snapshot.placement = await json(`${decisionUrl}/placement`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hosts, vms: [{ id: "VM-01", cpu_required: 2, memory_required: 4, network_required: 100 }, { id: "VM-02", cpu_required: 3, memory_required: 6, network_required: 150 }, { id: "VM-03", cpu_required: 1, memory_required: 2, network_required: 50 }], predicted: { cpu: 0, memory: 0, network: 0 } }) });
+    const live = await json<{ current_metrics: { request_rate: number; cpu: number; memory: number; network: number; latency: number; timestamp: string }; predicted_workload: { predicted_request_rate: number; model: string }; predicted_cpu: number; predicted_memory: number; predicted_network: number; decision: string; reason: string; capacity_status: Record<string, unknown>; placement: Record<string, unknown>; explanation: Record<string, unknown> }>(`${decisionUrl}/decision/live`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hosts, vms: [{ id: "VM-01", cpu_required: 2, memory_required: 4, network_required: 100 }, { id: "VM-02", cpu_required: 3, memory_required: 6, network_required: 150 }, { id: "VM-03", cpu_required: 1, memory_required: 2, network_required: 50 }] }) });
+    snapshot.metrics = { requestRate: live.current_metrics.request_rate, cpu: live.current_metrics.cpu, memory: live.current_metrics.memory, network: live.current_metrics.network, latency: live.current_metrics.latency, timestamp: live.current_metrics.timestamp };
+    snapshot.prediction = live.predicted_workload;
+    snapshot.resources = { predicted_cpu: live.predicted_cpu, predicted_memory: live.predicted_memory, predicted_network: live.predicted_network };
+    snapshot.decision = { decision: live.decision, reason: live.reason, ...live.capacity_status };
+    snapshot.placement = live.placement;
+    snapshot.explanation = live.explanation;
+    history.push({ timestamp: live.current_metrics.timestamp, actual: live.current_metrics.request_rate, predicted: live.predicted_workload.predicted_request_rate });
+    if (history.length > 30) history.shift();
+    snapshot.history = [...history];
+    addEvent("LIVE_METRICS", "Prometheus observation received", snapshot.metrics);
+    addEvent("LSTM_PREDICTION", "Workload forecast updated", live.predicted_workload);
+    addEvent("RESOURCE_ESTIMATION", "Random Forest demand estimated", snapshot.resources);
+    addEvent("DECISION", live.reason, { decision: live.decision });
+    addEvent("PLACEMENT", "Best-Fit placement evaluated", live.placement);
   } catch (error) { snapshot.errors.push(error instanceof Error ? error.message : "Service request failed"); }
   return snapshot;
 }

@@ -7,3 +7,4 @@ ml-service/models/*
 !ml-service/models/.gitkeep
 .env
 *.tsbuildinfo
+copilot-instructions.md
