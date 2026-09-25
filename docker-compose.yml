@@ -10,6 +10,10 @@ services:
   decision-engine:
     build: ./decision-engine
     ports: ["8002:8002"]
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      ML_SERVICE_URL: http://ml-service:8001
+    depends_on: [prometheus, ml-service]
   backend:
     build: ./backend
     ports: ["3000:3000"]
