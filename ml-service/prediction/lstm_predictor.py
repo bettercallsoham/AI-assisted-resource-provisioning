@@ -24,6 +24,13 @@ class LSTMPredictor:
         predicted_scaled = self.model.predict(scaled.reshape(1, self.window, 1), verbose=0)
         return float(self.scaler.inverse_transform(predicted_scaled)[0, 0])
 
+    def predict_many(self, histories: np.ndarray) -> np.ndarray:
+        if histories.ndim != 2 or histories.shape[1] != self.window:
+            raise ValueError(f"histories must have shape (n, {self.window})")
+        scaled = self.scaler.transform(histories.reshape(-1, 1)).reshape(histories.shape)
+        predicted_scaled = self.model.predict(scaled[..., None], verbose=0)
+        return self.scaler.inverse_transform(predicted_scaled).ravel()
+
 
 def predict_request_rate(history: list[float]) -> float:
     return LSTMPredictor().predict(history)

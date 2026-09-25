@@ -1,14 +1,15 @@
 import os
-import pickle
 from pathlib import Path
 
+import joblib
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from sklearn.ensemble import RandomForestRegressor
 
-from preprocessing import FEATURES, load_metrics
+from preprocessing import FEATURES
 from prediction.lstm_predictor import LSTMPredictor
+from prediction.resource_predictor import ResourcePredictor
+from training.train_random_forest import train as train_random_forest_models
 from training.train_lstm import train as train_lstm_model
 
 ROOT = Path(__file__).parent
@@ -35,11 +36,10 @@ def resource_features(request: ResourceRequest) -> np.ndarray:
 
 
 def load_rf(resource: str):
-    path = MODEL_DIR / f"rf_{resource}.pkl"
+    path = MODEL_DIR / f"rf_{resource}.joblib"
     if not path.exists():
         raise HTTPException(503, "Random Forest models are not trained. Run POST /train/random-forest.")
-    with path.open("rb") as handle:
-        return pickle.load(handle)
+    return joblib.load(path)
 
 
 @app.get("/health")
@@ -62,8 +62,13 @@ def predict_workload(request: WorkloadRequest) -> dict:
 
 @app.post("/predict/resources")
 def predict_resources(request: ResourceRequest) -> dict:
-    features = resource_features(request)
-    return {f"predicted_{resource}": round(max(0, float(load_rf(resource).predict(features)[0])), 4) for resource in ("cpu", "memory", "network")}
+    try:
+        predictions = ResourcePredictor().predict(**request.model_dump())
+    except FileNotFoundError as error:
+        raise HTTPException(503, "Random Forest models are not trained. Run POST /train/random-forest.") from error
+    except Exception as error:
+        raise HTTPException(500, f"Unable to predict resource demand: {error}") from error
+    return {name: round(value, 4) for name, value in predictions.items()}
 
 
 @app.post("/explain/resources")
@@ -83,16 +88,12 @@ def explain_resources(request: ResourceRequest) -> dict:
 
 
 @app.post("/train/random-forest")
-def train_random_forest(path: str = os.getenv("METRICS_DATA", str(ROOT / "data" / "sample_metrics.csv"))) -> dict:
-    frame = load_metrics(path)
-    values = frame[FEATURES].to_numpy()
-    x = np.column_stack([values[:-1, 0], values[:-1, :]])
-    targets = {"cpu": values[1:, 1], "memory": values[1:, 2], "network": values[1:, 3]}
-    for resource, target in targets.items():
-        model = RandomForestRegressor(n_estimators=80, random_state=42, min_samples_leaf=1).fit(x, target)
-        with (MODEL_DIR / f"rf_{resource}.pkl").open("wb") as handle:
-            pickle.dump(model, handle)
-    return {"status": "trained", "rows": len(x), "models": ["cpu", "memory", "network"]}
+def train_random_forest(path: str = os.getenv("METRICS_DATA", str(ROOT / "data" / "final_dataset.csv"))) -> dict:
+    try:
+        metrics = train_random_forest_models(Path(path))
+    except Exception as error:
+        raise HTTPException(500, f"Unable to train Random Forest models: {error}") from error
+    return {"status": "trained", "metrics": metrics}
 
 
 @app.post("/train/lstm")
