@@ -52,6 +52,49 @@ class ResourcePredictor:
             for resource, model in self.models.items()
         }
 
+    def explain(self, resource: str, values: np.ndarray) -> dict:
+        if resource not in RESOURCE_NAMES:
+            raise ValueError(f"Unsupported resource: {resource}")
+        if values.shape != (1, len(FEATURE_NAMES)):
+            raise ValueError(f"values must have shape (1, {len(FEATURE_NAMES)})")
+        import shap
+
+        scaled = self.scaler.transform(values)
+        model = self.models[resource]
+        explanation = shap.TreeExplainer(model)(scaled)
+        contributions = np.asarray(explanation.values)
+        if contributions.ndim == 3:
+            contributions = contributions[0, :, 0]
+        else:
+            contributions = contributions[0]
+        prediction = float(model.predict(scaled)[0])
+        base_values = np.asarray(explanation.base_values).reshape(-1)
+        feature_contributions = [
+            {
+                "name": name,
+                "value": float(values[0, index]),
+                "contribution": float(contribution),
+                "direction": "positive" if contribution >= 0 else "negative",
+            }
+            for index, (name, contribution) in enumerate(zip(FEATURE_NAMES, contributions))
+        ]
+        ranked_importance = sorted(
+            [
+                {"name": item["name"], "importance": abs(item["contribution"])}
+                for item in feature_contributions
+            ],
+            key=lambda item: item["importance"],
+            reverse=True,
+        )
+        return {
+            "resource": resource,
+            "prediction": prediction,
+            "base_value": float(base_values[0]),
+            "feature_names": FEATURE_NAMES,
+            "features": feature_contributions,
+            "ranked_importance": ranked_importance,
+        }
+
 
 def predict_resources(**features: float) -> dict[str, float]:
     missing = set(FEATURE_NAMES).difference(features)

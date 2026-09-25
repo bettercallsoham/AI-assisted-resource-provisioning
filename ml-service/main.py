@@ -74,17 +74,29 @@ def predict_resources(request: ResourceRequest) -> dict:
 @app.post("/explain/resources")
 def explain_resources(request: ResourceRequest) -> dict:
     try:
-        import shap
+        predictor = ResourcePredictor()
+        features = resource_features(request)
+        return {resource: predictor.explain(resource, features) for resource in ("cpu", "memory", "network")}
+    except FileNotFoundError as error:
+        raise HTTPException(503, "Random Forest models are not trained. Run POST /train/random-forest.") from error
     except ImportError as error:
         raise HTTPException(503, "Install SHAP to enable explanations") from error
-    features = resource_features(request)
-    output = {}
-    for resource in ("cpu", "memory", "network"):
-        model = load_rf(resource)
-        explanation = shap.TreeExplainer(model)(features)
-        values = explanation.values[0]
-        output[resource] = {"prediction": float(model.predict(features)[0]), "features": [{"name": name, "contribution": round(float(value), 5)} for name, value in zip(["predicted_request_rate", "current_request_rate", *FEATURES[1:]], values)]}
-    return output
+    except Exception as error:
+        raise HTTPException(500, f"Unable to explain resource predictions: {error}") from error
+
+
+@app.post("/explain/resources/{resource}")
+def explain_resource(resource: str, request: ResourceRequest) -> dict:
+    if resource not in ("cpu", "memory", "network"):
+        raise HTTPException(404, "Resource must be cpu, memory, or network")
+    try:
+        return ResourcePredictor().explain(resource, resource_features(request))
+    except FileNotFoundError as error:
+        raise HTTPException(503, "Random Forest models are not trained. Run POST /train/random-forest.") from error
+    except ImportError as error:
+        raise HTTPException(503, "Install SHAP to enable explanations") from error
+    except Exception as error:
+        raise HTTPException(500, f"Unable to explain {resource} prediction: {error}") from error
 
 
 @app.post("/train/random-forest")
