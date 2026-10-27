@@ -57,18 +57,23 @@ class ResourcePredictor:
             raise ValueError(f"Unsupported resource: {resource}")
         if values.shape != (1, len(FEATURE_NAMES)):
             raise ValueError(f"values must have shape (1, {len(FEATURE_NAMES)})")
-        import shap
-
         scaled = self.scaler.transform(values)
         model = self.models[resource]
-        explanation = shap.TreeExplainer(model)(scaled)
-        contributions = np.asarray(explanation.values)
-        if contributions.ndim == 3:
-            contributions = contributions[0, :, 0]
-        else:
-            contributions = contributions[0]
+        contributions = np.zeros(len(FEATURE_NAMES), dtype=float)
+        base_value = 0.0
+        for estimator in model.estimators_:
+            tree = estimator.tree_
+            node = 0
+            base_value += float(tree.value[node, 0, 0])
+            while tree.children_left[node] != tree.children_right[node]:
+                feature = int(tree.feature[node])
+                child = (int(tree.children_left[node]) if scaled[0, feature] <= tree.threshold[node]
+                         else int(tree.children_right[node]))
+                contributions[feature] += float(tree.value[child, 0, 0] - tree.value[node, 0, 0])
+                node = child
+        base_value /= len(model.estimators_)
+        contributions /= len(model.estimators_)
         prediction = float(model.predict(scaled)[0])
-        base_values = np.asarray(explanation.base_values).reshape(-1)
         feature_contributions = [
             {
                 "name": name,
@@ -89,7 +94,7 @@ class ResourcePredictor:
         return {
             "resource": resource,
             "prediction": prediction,
-            "base_value": float(base_values[0]),
+            "base_value": base_value,
             "feature_names": FEATURE_NAMES,
             "features": feature_contributions,
             "ranked_importance": ranked_importance,

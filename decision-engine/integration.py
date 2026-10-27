@@ -1,5 +1,6 @@
 import os
 import time
+import math
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -7,6 +8,7 @@ import httpx
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 ML_SERVICE_URL = os.getenv("ML_SERVICE_URL", "http://localhost:8001")
+WORKLOAD_URL = os.getenv("WORKLOAD_URL", "http://localhost:8000")
 METRIC_QUERIES = {
     "request_rate": 'sum(rate(workload_requests_total{endpoint="work",status="success"}[30s]))',
     "cpu": "workload_cpu_utilization_percent",
@@ -29,8 +31,11 @@ def _get_json(url: str, params: dict[str, str] | None = None) -> dict:
         raise IntegrationError(f"Request failed for {url}: {error}") from error
 
 
-def _query(query: str) -> float:
-    payload = _get_json(f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query", {"query": query})
+def _query(query: str, at: float | None = None) -> float:
+    params = {"query": query}
+    if at is not None:
+        params["time"] = str(at)
+    payload = _get_json(f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query", params)
     results = payload.get("data", {}).get("result", [])
     if len(results) != 1:
         raise IntegrationError(f"Prometheus query returned {len(results)} series: {query}")
@@ -44,22 +49,27 @@ def _query(query: str) -> float:
     return number
 
 
-def current_metrics() -> dict[str, float | str]:
-    values = {name: _query(query) for name, query in METRIC_QUERIES.items()}
-    values["timestamp"] = datetime.now(timezone.utc).isoformat()
+def current_metrics(origin: dict) -> dict[str, float | str]:
+    at = datetime.fromisoformat(origin["timestamp"]).timestamp()
+    values = {name: _query(query, at) for name, query in METRIC_QUERIES.items()
+              if name != "request_rate"}
+    values["request_rate"] = origin["value"]
+    values["timestamp"] = origin["timestamp"]
     return values
 
 
-def request_rate_history() -> list[float]:
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(seconds=90)
+def request_rate_history() -> list[dict[str, float | str]]:
+    now = time.time()
+    # Allow the five-second scrape to finish; use the same grid on every poll.
+    end = math.floor((now - 3) / 5) * 5
+    start = end - 55
     query = METRIC_QUERIES["request_rate"]
     payload = _get_json(
         f"{PROMETHEUS_URL.rstrip('/')}/api/v1/query_range",
         {
             "query": query,
-            "start": str(start.timestamp()),
-            "end": str(end.timestamp()),
+            "start": str(start),
+            "end": str(end),
             "step": "5",
         },
     )
@@ -67,16 +77,23 @@ def request_rate_history() -> list[float]:
     if len(results) != 1:
         raise IntegrationError(f"Request-rate history returned {len(results)} series")
     values = []
-    for _, raw_value in results[0].get("values", []):
+    for raw_timestamp, raw_value in results[0].get("values", []):
         try:
+            timestamp = float(raw_timestamp)
             value = float(raw_value)
         except (TypeError, ValueError):
-            continue
-        if value == value and value not in (float("inf"), float("-inf")):
-            values.append(value)
-    if len(values) < 12:
-        raise IntegrationError(f"Only {len(values)} request-rate history samples are available")
-    return values[-12:]
+            raise IntegrationError("Request-rate history contains a non-numeric sample")
+        if not math.isfinite(timestamp) or not math.isfinite(value) or value < 0:
+            raise IntegrationError("Request-rate history contains an invalid sample")
+        values.append({"timestamp": datetime.fromtimestamp(timestamp, timezone.utc).isoformat(),
+                       "value": value})
+    if len(values) != 12 or any(abs(datetime.fromisoformat(values[index]["timestamp"]).timestamp()
+                                   - (start + index * 5)) > 0.01 for index in range(12)):
+        raise IntegrationError("A complete, aligned five-second request-rate history is unavailable")
+    scraped_at = _query('timestamp(workload_requests_total{endpoint="work",status="success"})', end)
+    if scraped_at > now + 1 or now - scraped_at > 12:
+        raise IntegrationError("Workload counter sample is stale")
+    return values
 
 
 def post_ml(path: str, body: dict) -> dict:
@@ -91,10 +108,31 @@ def post_ml(path: str, body: dict) -> dict:
     return payload
 
 
-def run_ml_pipeline() -> tuple[dict, dict, dict, dict]:
-    metrics = current_metrics()
+def planned_workload(target: datetime) -> dict | None:
+    try:
+        response = httpx.get(
+            f"{WORKLOAD_URL.rstrip('/')}/demo/forecast",
+            params={"target_timestamp": target.isoformat()}, timeout=2,
+        )
+        response.raise_for_status()
+        forecast = response.json()
+        rate = float(forecast.get("predicted_request_rate"))
+        if forecast.get("active") and math.isfinite(rate) and rate >= 0:
+            return {"predicted_request_rate": rate, "model": "scenario"}
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        pass
+    return None
+
+
+def run_ml_pipeline() -> tuple[dict, dict, dict, dict, list[dict]]:
     history = request_rate_history()
-    workload = post_ml("/predict/workload", {"history": history})
+    metrics = current_metrics(history[-1])
+    origin = datetime.fromisoformat(history[-1]["timestamp"])
+    workload = planned_workload(origin + timedelta(seconds=5))
+    if workload is None:
+        workload = post_ml("/predict/workload", {"history": [point["value"] for point in history]})
+    workload["origin_timestamp"] = origin.isoformat()
+    workload["target_timestamp"] = (origin + timedelta(seconds=5)).isoformat()
     resource_input = {
         "predicted_request_rate": workload["predicted_request_rate"],
         "current_request_rate": metrics["request_rate"],
@@ -105,4 +143,4 @@ def run_ml_pipeline() -> tuple[dict, dict, dict, dict]:
     }
     resources = post_ml("/predict/resources", resource_input)
     explanation = post_ml("/explain/resources", resource_input)
-    return metrics, workload, resources, explanation
+    return metrics, workload, resources, explanation, history

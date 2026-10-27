@@ -1,0 +1,12 @@
+{"timestamp_utc": "2026-10-26T19:41:36.874973+00:00", "event": "phase_start", "phase": "low", "nominal_rate_requests_per_second": 2}
+{"timestamp_utc": "2026-10-26T19:42:06.952698+00:00", "event": "phase_end", "phase": "low", "elapsed_seconds": 30.077570100009325, "requests": 53, "successful": 53, "failed": 0}
+{"timestamp_utc": "2026-10-26T19:42:06.953042+00:00", "event": "phase_start", "phase": "medium", "nominal_rate_requests_per_second": 8}
+{"timestamp_utc": "2026-10-26T19:42:37.038905+00:00", "event": "phase_end", "phase": "medium", "elapsed_seconds": 30.085754200001247, "requests": 197, "successful": 197, "failed": 0}
+{"timestamp_utc": "2026-10-26T19:42:37.039148+00:00", "event": "phase_start", "phase": "high", "nominal_rate_requests_per_second": 20}
+{"timestamp_utc": "2026-10-26T19:43:07.140600+00:00", "event": "phase_end", "phase": "high", "elapsed_seconds": 30.101110700008576, "requests": 428, "successful": 428, "failed": 0}
+{"timestamp_utc": "2026-10-26T19:43:07.140980+00:00", "event": "phase_start", "phase": "spike", "nominal_rate_requests_per_second": 60}
+{"timestamp_utc": "2026-10-26T19:43:37.303820+00:00", "event": "phase_end", "phase": "spike", "elapsed_seconds": 30.162776900004246, "requests": 888, "successful": 888, "failed": 0}
+{"timestamp_utc": "2026-10-26T19:43:37.304384+00:00", "event": "phase_start", "phase": "decrease", "nominal_rate_requests_per_second": 8}
+{"timestamp_utc": "2026-10-26T19:44:07.381342+00:00", "event": "phase_end", "phase": "decrease", "elapsed_seconds": 30.07688579999376, "requests": 197, "successful": 197, "failed": 0}
+{"timestamp_utc": "2026-10-26T19:44:07.381686+00:00", "event": "phase_start", "phase": "mixed", "nominal_rate_requests_per_second": 20}
+{"timestamp_utc": "2026-10-26T19:44:37.417551+00:00", "event": "phase_end", "phase": "mixed", "elapsed_seconds": 30.03580709999369, "requests": 327, "successful": 327, "failed": 0}

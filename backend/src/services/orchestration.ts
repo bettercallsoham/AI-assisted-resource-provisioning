@@ -1,19 +1,18 @@
 import type { Host, Metrics, Snapshot } from "../types/index.js";
+import { provisioner } from "./provisioning.js";
+import type { DecisionPlan, VMRequest } from "./provisioning.js";
+import { mergeForecastHistory } from "./forecastHistory.js";
+import type { ForecastPoint } from "./forecastHistory.js";
 
 const prometheusUrl = process.env.PROMETHEUS_URL ?? "http://localhost:9090";
 const mlUrl = process.env.ML_SERVICE_URL ?? "http://localhost:8001";
 const decisionUrl = process.env.DECISION_ENGINE_URL ?? "http://localhost:8002";
-const hosts: Host[] = [
-  { id: "Host-01", total_cpu: 8, total_memory: 16, total_network: 1000, allocated_cpu: 2, allocated_memory: 4, allocated_network: 100 },
-  { id: "Host-02", total_cpu: 12, total_memory: 32, total_network: 1000, allocated_cpu: 5, allocated_memory: 10, allocated_network: 220 },
-  { id: "Host-03", total_cpu: 16, total_memory: 32, total_network: 10000, allocated_cpu: 3, allocated_memory: 8, allocated_network: 400 }
-];
 const events: Array<Record<string, unknown>> = [];
-const history: Array<{ timestamp: string; actual: number; predicted: number }> = [];
+let history: ForecastPoint[] = [];
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
-  if (!response.ok) throw new Error(`${url} returned ${response.status}`);
+  if (!response.ok) throw new Error(`${url} returned ${response.status}: ${(await response.text()).slice(0, 300)}`);
   return response.json() as Promise<T>;
 }
 
@@ -21,7 +20,8 @@ async function query(promql: string): Promise<number | null> {
   try {
     const result = await json<{ data?: { result?: Array<{ value: [number, string] }> } }>(`${prometheusUrl}/api/v1/query?query=${encodeURIComponent(promql)}`);
     const value = result.data?.result?.[0]?.value?.[1];
-    return value === undefined ? null : Number(value);
+    const parsed = value === undefined ? null : Number(value);
+    return parsed !== null && Number.isFinite(parsed) ? parsed : null;
   } catch { return null; }
 }
 
@@ -36,31 +36,83 @@ async function metrics(): Promise<Metrics> {
   return { requestRate, cpu, memory, network, latency, timestamp: new Date().toISOString() };
 }
 
-function addEvent(eventType: string, message: string, details: Record<string, unknown> = {}) {
+export function addEvent(eventType: string, message: string, details: Record<string, unknown> = {}) {
   events.unshift({ timestamp: new Date().toISOString(), event_type: eventType, message, details });
   events.splice(20);
 }
 
+export function clearDemoHistory(): void {
+  events.length = 0;
+  history.length = 0;
+}
+
+function recordObservation(timestamp: string, actual: number | null): void {
+  if (actual === null || !Number.isFinite(actual)) return;
+  history = mergeForecastHistory(history, [{ timestamp, value: actual }], null);
+}
+
 export async function getSnapshot(): Promise<Snapshot> {
-  const snapshot: Snapshot = { metrics: { requestRate: null, cpu: null, memory: null, network: null, latency: null, timestamp: new Date().toISOString() }, prediction: null, resources: null, decision: null, placement: null, explanation: null, hosts, history: [...history], errors: [], events };
+  const hosts = provisioner.hosts();
+  const proposal = provisioner.latest();
+  const proposalVersion = `${proposal?.id}:${proposal?.status}:${proposal?.updated_at}`;
+  const vms = proposal?.status === "PENDING_APPROVAL" ? proposal.vms : [];
+  const snapshot: Snapshot = { metrics: { requestRate: null, cpu: null, memory: null, network: null, latency: null, timestamp: new Date().toISOString() }, prediction: null, resources: null, decision: null, placement: null, explanation: null, proposal, hosts, history: [...history], errors: [], events };
   try {
-    const live = await json<{ current_metrics: { request_rate: number; cpu: number; memory: number; network: number; latency: number; timestamp: string }; predicted_workload: { predicted_request_rate: number; model: string }; predicted_cpu: number; predicted_memory: number; predicted_network: number; decision: string; reason: string; capacity_status: Record<string, unknown>; placement: Record<string, unknown>; explanation: Record<string, unknown> }>(`${decisionUrl}/decision/live`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hosts, vms: [{ id: "VM-01", cpu_required: 2, memory_required: 4, network_required: 100 }, { id: "VM-02", cpu_required: 3, memory_required: 6, network_required: 150 }, { id: "VM-03", cpu_required: 1, memory_required: 2, network_required: 50 }] }) });
+    const live = await json<{ current_metrics: { request_rate: number; cpu: number; memory: number; network: number; latency: number; timestamp: string }; predicted_workload: { predicted_request_rate: number; model: string; origin_timestamp: string; target_timestamp: string }; request_history: Array<{ timestamp: string; value: number }>; predicted_cpu: number; predicted_memory: number; predicted_network: number; decision: string; reason: string; capacity_status: Record<string, unknown>; placement: Record<string, unknown>; explanation: Record<string, unknown> }>(`${decisionUrl}/decision/live`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hosts, vms }) });
     snapshot.metrics = { requestRate: live.current_metrics.request_rate, cpu: live.current_metrics.cpu, memory: live.current_metrics.memory, network: live.current_metrics.network, latency: live.current_metrics.latency, timestamp: live.current_metrics.timestamp };
     snapshot.prediction = live.predicted_workload;
     snapshot.resources = { predicted_cpu: live.predicted_cpu, predicted_memory: live.predicted_memory, predicted_network: live.predicted_network };
     snapshot.decision = { decision: live.decision, reason: live.reason, ...live.capacity_status };
     snapshot.placement = live.placement;
     snapshot.explanation = live.explanation;
-    history.push({ timestamp: live.current_metrics.timestamp, actual: live.current_metrics.request_rate, predicted: live.predicted_workload.predicted_request_rate });
-    if (history.length > 30) history.shift();
+    history = mergeForecastHistory(history, live.request_history, live.predicted_workload);
     snapshot.history = [...history];
     addEvent("LIVE_METRICS", "Prometheus observation received", snapshot.metrics);
-    addEvent("LSTM_PREDICTION", "Workload forecast updated", live.predicted_workload);
+    addEvent("WORKLOAD_FORECAST", "Workload forecast updated", live.predicted_workload);
     addEvent("RESOURCE_ESTIMATION", "Random Forest demand estimated", snapshot.resources);
     addEvent("DECISION", live.reason, { decision: live.decision });
     addEvent("PLACEMENT", "Best-Fit placement evaluated", live.placement);
-  } catch (error) { snapshot.errors.push(error instanceof Error ? error.message : "Service request failed"); }
+  } catch (error) {
+    snapshot.errors.push(error instanceof Error ? error.message : "Live prediction failed");
+    try {
+      const plan = await evaluatePlan(hosts, vms);
+      snapshot.decision = plan;
+      snapshot.placement = plan.placement;
+      snapshot.metrics = await metrics();
+      recordObservation(snapshot.metrics.timestamp, snapshot.metrics.requestRate);
+    } catch (decisionError) {
+      snapshot.errors.push(decisionError instanceof Error ? decisionError.message : "Capacity service failed");
+    }
+  }
+  snapshot.history = [...history];
+  snapshot.events = [...events];
+  const latest = provisioner.latest();
+  if (`${latest?.id}:${latest?.status}:${latest?.updated_at}` !== proposalVersion) {
+    snapshot.proposal = latest;
+    snapshot.hosts = provisioner.hosts();
+    try {
+      const currentVms = latest?.status === "PENDING_APPROVAL" ? latest.vms : [];
+      const currentPlan = await evaluatePlan(snapshot.hosts, currentVms);
+      snapshot.decision = currentPlan;
+      snapshot.placement = currentPlan.placement;
+    } catch (error) {
+      snapshot.errors.push(error instanceof Error ? error.message : "Capacity refresh failed");
+      snapshot.decision = null;
+      snapshot.placement = null;
+    }
+  }
+  if (latest) {
+    snapshot.decision = latest.decision;
+    snapshot.placement = latest.decision.placement;
+  }
   return snapshot;
 }
 
-export { metrics, events, hosts };
+export async function evaluatePlan(hosts: Host[], vms: VMRequest[]): Promise<DecisionPlan> {
+  return json<DecisionPlan>(`${decisionUrl}/decision`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ hosts, vms }),
+  });
+}
+
+export { metrics, events };

@@ -13,11 +13,13 @@ services:
     environment:
       PROMETHEUS_URL: http://prometheus:9090
       ML_SERVICE_URL: http://ml-service:8001
+      WORKLOAD_URL: http://workload:8000
     depends_on: [prometheus, ml-service]
   backend:
     build: ./backend
     ports: ["3000:3000"]
     environment:
+      WORKLOAD_URL: http://workload:8000
       PROMETHEUS_URL: http://prometheus:9090
       ML_SERVICE_URL: http://ml-service:8001
       DECISION_ENGINE_URL: http://decision-engine:8002
@@ -38,6 +40,6 @@ services:
     ports: ["8080:8080"]
     volumes:
       - /:/rootfs:ro
-      - /var/run:/var/run:ro
+      - /var/run:/var/run:rocls
       - /sys:/sys:ro
       - /var/lib/docker:/var/lib/docker:ro

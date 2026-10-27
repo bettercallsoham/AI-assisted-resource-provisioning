@@ -10,6 +10,7 @@ async def run(args: argparse.Namespace) -> None:
     started = time.perf_counter()
     sent = successful = failed = 0
     latencies: list[float] = []
+    budget = 0.0
     async with httpx.AsyncClient(timeout=10) as client:
         while time.perf_counter() - started < args.duration:
             elapsed = time.perf_counter() - started
@@ -19,9 +20,11 @@ async def run(args: argparse.Namespace) -> None:
                 rate = args.rate * (1 + min(progress * 2, 2)) if progress < 0.7 else args.rate
             if args.spike and elapsed > args.duration / 2:
                 rate *= 4
-            batch = max(1, round(rate / 10))
+            budget += rate * 0.1
+            batch = int(budget)
+            budget -= batch
             batch_started = time.perf_counter()
-            results = await asyncio.gather(*(send(client, args.url) for _ in range(batch)))
+            results = await asyncio.gather(*(send(client, args.url) for _ in range(batch))) if batch else []
             for latency, ok in results:
                 sent += 1
                 (latencies if ok else []).append(latency)
@@ -48,4 +51,7 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=float, default=60)
     parser.add_argument("--spike", action="store_true")
     parser.add_argument("--scenario", action="store_true", help="normal, increase, high load, decrease")
-    asyncio.run(run(parser.parse_args()))
+    args = parser.parse_args()
+    if args.rate <= 0 or args.duration <= 0:
+        parser.error("--rate and --duration must be positive")
+    asyncio.run(run(args))

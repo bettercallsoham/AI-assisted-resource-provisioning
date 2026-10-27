@@ -1,0 +1,45 @@
+{
+  "session_id": "quick_dev_01",
+  "role": "development",
+  "status": "complete",
+  "started_at_utc": "2026-10-26T19:41:32.222858+00:00",
+  "ended_at_utc": "2026-10-26T19:45:32.445096+00:00",
+  "prometheus_url": "http://localhost:9090",
+  "environment": "Docker Compose on LAPTOP-9QKRNFPO",
+  "scenario": "workload_scenario.py --phase-duration 30",
+  "duration_requested_seconds": 240.0,
+  "poll_interval_requested_seconds": 5.0,
+  "query_sample_max_skew_seconds": 10.0,
+  "queries": {
+    "request_rate": "sum(rate(workload_requests_total{endpoint=\"work\",status=\"success\"}[30s]))",
+    "cpu_utilization": "workload_cpu_utilization_percent",
+    "memory_utilization": "workload_memory_utilization_percent",
+    "network_throughput": "workload_network_throughput_bytes_per_second",
+    "response_latency": "1000 * sum(rate(workload_request_latency_seconds_sum{endpoint=\"work\"}[30s])) / sum(rate(workload_request_latency_seconds_count{endpoint=\"work\"}[30s]))"
+  },
+  "units": {
+    "request_rate": "requests/second",
+    "cpu_utilization": "process CPU percent (may exceed 100 on multiple cores)",
+    "memory_utilization": "process RSS / effective memory limit * 100",
+    "network_throughput": "non-loopback network namespace sent+received B/s",
+    "response_latency": "milliseconds, 30-second request-weighted mean"
+  },
+  "collector_script_sha256": "926f9d550ae627cfcf566b52e2eaec2b786aa8db4b022469462cb1ef6d645d98",
+  "metric_query_script_sha256": "f756fab50991a3d91792facd946340bc31b1390732ed415bd924a1bc69e388b7",
+  "workload_app_sha256": "a0948c0189d4b69ef98b04ce7e093b45a0364553676ba70e23509acce518ed22",
+  "workload_metric_semantics_sha256": "2a2f9c44045c58db780e427d783c6d00f360871d6c062a3b70b0ab5a45da6774",
+  "prometheus_config_sha256": "3092a5bea06fa3e497a142ce29293ba6e583081213df94e89f4985b761179b6b",
+  "workload_scenario_script_sha256": "2945256f13820cb5e8be90bc3c5249dcbdf05bec54cafd9d15463a724f724b0a",
+  "git_revision": "2ec259256bebdb633908a90b487db1dcfd24c074",
+  "collector_platform": "Windows-11-10.0.26300-SP0",
+  "polls": 49,
+  "complete_rows": 43,
+  "skipped_rows": 6,
+  "skip_reasons": {
+    "response_latency: nonfinite or negative measurement": 6
+  },
+  "elapsed_seconds": 240.0884545000008,
+  "raw_sha256": "234dbbe5d6430f0d86d3c2714182161b367b40c66695dd1c3c73a63b2b1d0d5b",
+  "metrics_sha256": "eb9c9c0c45248387fbba63c783c2a7825128a3877e2a26bdc4c981093b142a8d",
+  "scenario_log_sha256": "77e7ea399c980931e407296c49cdfd6c3aff11d50a015ec99529cd8c2e8a4be8"
+}
